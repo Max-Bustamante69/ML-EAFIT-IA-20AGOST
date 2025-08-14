@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 
 
 
@@ -123,3 +124,8 @@ Puedes usarlo, modificarlo y compartirlo libremente.
 
 ¿Quieres que además te prepare un **`requirements.txt` listo** con las librerías necesarias para que funcione de una?
 ```
+=======
+Get started by customizing your environment (defined in the .idx/dev.nix file) with the tools and IDE extensions you'll need for your project!
+
+Learn more at https://developers.google.com/idx/guides/customize-idx-env
+>>>>>>> 9b1a8b7 (Initialized workspace with Firebase Studio)
