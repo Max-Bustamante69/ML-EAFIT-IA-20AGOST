@@ -20,6 +20,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
+from sklearn.tree import DecisionTreeClassifier, plot_tree, export_text
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -65,14 +66,6 @@ def generar_datos_simulados(n_samples=500):
     puntuacion_credito = np.random.normal(650, 100, n_samples).clip(300, 850)
 
     # Crear variable target basada en lógica de negocio
-    # La probabilidad de compra aumenta con:
-    # - Mayor edad (hasta cierto punto)
-    # - Mayores ingresos
-    # - Más tiempo en web
-    # - Más productos vistos
-    # - Más historial de compras
-    # - Mejor puntuación de crédito
-
     prob_compra = (
         0.1 * (edad - 18) / 62
         + 0.3 * np.log(ingresos / 20000) / np.log(10)
@@ -239,20 +232,31 @@ def entrenar_modelos(data, modelos_seleccionados):
                 n_estimators=100, random_state=42, max_depth=10
             ),
             "requiere_escalado": False,
+            "tiene_arbol": True,
         },
         "Regresión Logística": {
             "modelo": LogisticRegression(random_state=42, max_iter=1000),
             "requiere_escalado": True,
+            "tiene_arbol": False,
         },
         "SVM": {
             "modelo": SVC(random_state=42, probability=True, kernel="rbf"),
             "requiere_escalado": True,
+            "tiene_arbol": False,
         },
         "Gradient Boosting": {
             "modelo": GradientBoostingClassifier(
                 n_estimators=100, random_state=42, max_depth=6
             ),
             "requiere_escalado": False,
+            "tiene_arbol": True,
+        },
+        "Decision Tree": {
+            "modelo": DecisionTreeClassifier(
+                random_state=42, max_depth=8, min_samples_split=10, min_samples_leaf=5
+            ),
+            "requiere_escalado": False,
+            "tiene_arbol": True,
         },
     }
 
@@ -268,6 +272,7 @@ def entrenar_modelos(data, modelos_seleccionados):
     for nombre, config in modelos_a_entrenar.items():
         modelo = config["modelo"]
         requiere_escalado = config["requiere_escalado"]
+        tiene_arbol = config["tiene_arbol"]
 
         # Entrenar el modelo
         if requiere_escalado:
@@ -295,9 +300,113 @@ def entrenar_modelos(data, modelos_seleccionados):
             "y_pred": y_pred,
             "y_proba": y_proba,
             "scaler": scaler if requiere_escalado else None,
+            "tiene_arbol": tiene_arbol,
+            "feature_names": list(X.columns),
         }
 
     return resultados, X_train, X_test
+
+
+def visualizar_arbol_decision(modelo, nombre_modelo, feature_names, max_depth_viz=4):
+    """
+    Visualiza el árbol de decisión de un modelo.
+
+    Args:
+        modelo: Modelo entrenado
+        nombre_modelo (str): Nombre del modelo
+        feature_names (list): Nombres de las características
+        max_depth_viz (int): Profundidad máxima para visualización
+    """
+    st.subheader(f"🌳 Visualización del Árbol - {nombre_modelo}")
+    
+    # Configurar el tamaño de la visualización
+    col1, col2 = st.columns([3, 1])
+    
+    with col2:
+        max_depth_viz = st.slider(
+            "Profundidad máxima:", 
+            min_value=2, 
+            max_value=10, 
+            value=4, 
+            key=f"depth_{nombre_modelo}"
+        )
+        
+        show_text = st.checkbox(
+            "Mostrar reglas de texto", 
+            value=False, 
+            key=f"text_{nombre_modelo}"
+        )
+    
+    with col1:
+        try:
+            if nombre_modelo == "Decision Tree":
+                # Para Decision Tree, mostrar el árbol directamente
+                arbol_a_mostrar = modelo
+            elif nombre_modelo == "Random Forest":
+                # Para Random Forest, mostrar el primer estimador
+                arbol_a_mostrar = modelo.estimators_[0]
+                st.info("📊 Mostrando el primer árbol del Random Forest (de 100 total)")
+            elif nombre_modelo == "Gradient Boosting":
+                # Para Gradient Boosting, mostrar el primer estimador
+                arbol_a_mostrar = modelo.estimators_[0, 0]
+                st.info("📊 Mostrando el primer árbol del Gradient Boosting (de 100 total)")
+            else:
+                st.warning(f"⚠️ {nombre_modelo} no tiene visualización de árbol disponible")
+                return
+            
+            # Crear la visualización
+            fig, ax = plt.subplots(figsize=(20, 12))
+            
+            plot_tree(
+                arbol_a_mostrar,
+                feature_names=feature_names,
+                class_names=['No Compra', 'Compra'],
+                filled=True,
+                rounded=True,
+                fontsize=10,
+                max_depth=max_depth_viz,
+                ax=ax
+            )
+            
+            plt.title(f"Árbol de Decisión - {nombre_modelo}\n(Profundidad máx: {max_depth_viz})", 
+                     fontsize=16, fontweight='bold')
+            st.pyplot(fig)
+            
+            # Mostrar reglas de texto si se solicita
+            if show_text:
+                st.subheader("📝 Reglas del Árbol en Texto")
+                
+                with st.expander("Ver reglas completas"):
+                    reglas_texto = export_text(
+                        arbol_a_mostrar,
+                        feature_names=feature_names,
+                        max_depth=max_depth_viz
+                    )
+                    st.text(reglas_texto)
+            
+            # Mostrar importancia de características para árboles individuales
+            if hasattr(arbol_a_mostrar, 'feature_importances_'):
+                st.subheader("📊 Importancia de Características")
+                
+                importancias = pd.DataFrame({
+                    'Característica': feature_names,
+                    'Importancia': arbol_a_mostrar.feature_importances_
+                }).sort_values('Importancia', ascending=False)
+                
+                fig_imp = px.bar(
+                    importancias,
+                    x='Importancia',
+                    y='Característica',
+                    orientation='h',
+                    title=f"Importancia de Características - {nombre_modelo}"
+                )
+                st.plotly_chart(fig_imp, use_container_width=True)
+                
+                # Mostrar tabla de importancias
+                st.dataframe(importancias.round(4))
+                
+        except Exception as e:
+            st.error(f"Error al visualizar el árbol: {str(e)}")
 
 
 def crear_graficos_eda(data):
@@ -575,12 +684,14 @@ def main():
             "Random Forest",
             "Regresión Logística", 
             "SVM",
-            "Gradient Boosting"
+            "Gradient Boosting",
+            "Decision Tree"
         ]
         
         modelos_seleccionados = []
         for modelo in modelos_disponibles:
-            if st.checkbox(modelo, value=(modelo in ["Random Forest", "Regresión Logística"])):
+            default_selected = modelo in ["Random Forest", "Regresión Logística", "Decision Tree"]
+            if st.checkbox(modelo, value=default_selected):
                 modelos_seleccionados.append(modelo)
         
         if not modelos_seleccionados:
@@ -618,8 +729,8 @@ def main():
         st.stop()
 
     # Tabs para organizar el contenido
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📊 Exploración de Datos", "🤖 Modelos ML", "📈 Métricas", "🔮 Predicción"]
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Exploración de Datos", "🤖 Modelos ML", "📈 Métricas", "🌳 Árboles", "🔮 Predicción"]
     )
 
     with tab1:
@@ -671,6 +782,37 @@ def main():
             st.warning("⚠️ Primero entrena los modelos en la pestaña 'Modelos ML'")
 
     with tab4:
+        st.header("🌳 Visualización de Árboles de Decisión")
+        
+        if "resultados" in locals() and resultados:
+            # Filtrar modelos que tienen árboles
+            modelos_con_arboles = {
+                nombre: resultado 
+                for nombre, resultado in resultados.items() 
+                if resultado.get("tiene_arbol", False)
+            }
+            
+            if modelos_con_arboles:
+                # Selector de modelo para visualizar
+                modelo_arbol = st.selectbox(
+                    "Selecciona el modelo para visualizar:",
+                    list(modelos_con_arboles.keys()),
+                    key="selector_arbol"
+                )
+                
+                if modelo_arbol:
+                    resultado_modelo = modelos_con_arboles[modelo_arbol]
+                    visualizar_arbol_decision(
+                        resultado_modelo["modelo"],
+                        modelo_arbol,
+                        resultado_modelo["feature_names"]
+                    )
+            else:
+                st.warning("⚠️ No hay modelos con árboles de decisión seleccionados. Selecciona Decision Tree, Random Forest o Gradient Boosting.")
+        else:
+            st.warning("⚠️ Primero entrena los modelos en la pestaña 'Modelos ML'")
+
+    with tab5:
         if "resultados" in locals() and resultados:
             seccion_prediccion(resultados, data)
         else:
