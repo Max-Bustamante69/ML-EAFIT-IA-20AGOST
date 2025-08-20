@@ -5,7 +5,7 @@ Aplicación de Machine Learning con Streamlit
 Esta aplicación demuestra un modelo supervisado de clasificación para predecir
 la compra de productos basado en características del cliente.
 
-Autor: T3 Chat Assistant
+Autor: Maximiliano Bustamante
 Fecha: 20/08/2025
 """
 
@@ -17,8 +17,9 @@ import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -29,6 +30,7 @@ from sklearn.metrics import (
 )
 from sklearn.preprocessing import StandardScaler
 import warnings
+import io
 
 warnings.filterwarnings("ignore")
 
@@ -103,13 +105,115 @@ def generar_datos_simulados(n_samples=500):
     return data
 
 
-@st.cache_data
-def entrenar_modelos(data):
+def validar_csv(df):
     """
-    Entrena múltiples modelos de ML y devuelve métricas.
+    Valida que el CSV tenga las columnas correctas.
+
+    Args:
+        df (pd.DataFrame): DataFrame a validar
+
+    Returns:
+        tuple: (bool, str) - (es_valido, mensaje)
+    """
+    columnas_requeridas = [
+        "edad",
+        "ingresos_anuales",
+        "tiempo_web_minutos",
+        "productos_vistos",
+        "historial_compras",
+        "puntuacion_credito",
+        "compra",
+    ]
+
+    columnas_faltantes = set(columnas_requeridas) - set(df.columns)
+
+    if columnas_faltantes:
+        return False, f"Columnas faltantes: {', '.join(columnas_faltantes)}"
+
+    # Verificar que 'compra' sea binaria
+    if not df["compra"].isin([0, 1]).all():
+        return (
+            False,
+            "La columna 'compra' debe contener solo valores 0 (no compra) y 1 (compra)",
+        )
+
+    # Verificar tipos de datos numéricos
+    for col in columnas_requeridas[:-1]:  # Todas excepto 'compra'
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            return False, f"La columna '{col}' debe ser numérica"
+
+    return True, "CSV válido"
+
+
+def cargar_datos_csv():
+    """
+    Interfaz para cargar datos desde CSV.
+
+    Returns:
+        pd.DataFrame: DataFrame cargado o None
+    """
+    uploaded_file = st.file_uploader(
+        "Sube tu archivo CSV", 
+        type="csv", 
+        help="El archivo debe tener las columnas requeridas"
+    )
+
+    if uploaded_file is not None:
+        try:
+            df = pd.read_csv(uploaded_file)
+            
+            # Mostrar información básica
+            st.info(f"📊 Archivo cargado: {df.shape[0]} filas, {df.shape[1]} columnas")
+            
+            # Validar estructura
+            es_valido, mensaje = validar_csv(df)
+            
+            if es_valido:
+                st.success("✅ " + mensaje)
+                
+                # Mostrar vista previa
+                st.subheader("👀 Vista Previa de los Datos")
+                st.dataframe(df.head())
+                
+                # Estadísticas básicas
+                st.subheader("📊 Estadísticas Básicas")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write("**Distribución de la variable target:**")
+                    target_counts = df["compra"].value_counts()
+                    st.write(f"- No compra (0): {target_counts.get(0, 0)}")
+                    st.write(f"- Compra (1): {target_counts.get(1, 0)}")
+                
+                with col2:
+                    st.write("**Información del dataset:**")
+                    st.write(f"- Total de registros: {len(df)}")
+                    st.write(f"- Valores nulos: {df.isnull().sum().sum()}")
+                
+                return df
+            else:
+                st.error("❌ " + mensaje)
+                st.info("El CSV debe tener estas columnas exactas:")
+                columnas_ejemplo = [
+                    "edad", "ingresos_anuales", "tiempo_web_minutos",
+                    "productos_vistos", "historial_compras", "puntuacion_credito", "compra"
+                ]
+                st.code(", ".join(columnas_ejemplo))
+                
+        except Exception as e:
+            st.error(f"Error al leer el archivo: {str(e)}")
+    
+    return None
+
+
+@st.cache_data
+def entrenar_modelos(data, modelos_seleccionados):
+    """
+    Entrena múltiples modelos de ML seleccionados y devuelve métricas.
 
     Args:
         data (pd.DataFrame): Dataset para entrenar
+        modelos_seleccionados (list): Lista de nombres de modelos a entrenar
 
     Returns:
         dict: Diccionario con modelos entrenados y métricas
@@ -128,18 +232,45 @@ def entrenar_modelos(data):
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    # Entrenar modelos
-    modelos = {
-        "Random Forest": RandomForestClassifier(
-            n_estimators=100, random_state=42, max_depth=10
-        ),
-        "Regresión Logística": LogisticRegression(random_state=42, max_iter=1000),
+    # Definir todos los modelos disponibles
+    todos_los_modelos = {
+        "Random Forest": {
+            "modelo": RandomForestClassifier(
+                n_estimators=100, random_state=42, max_depth=10
+            ),
+            "requiere_escalado": False,
+        },
+        "Regresión Logística": {
+            "modelo": LogisticRegression(random_state=42, max_iter=1000),
+            "requiere_escalado": True,
+        },
+        "SVM": {
+            "modelo": SVC(random_state=42, probability=True, kernel="rbf"),
+            "requiere_escalado": True,
+        },
+        "Gradient Boosting": {
+            "modelo": GradientBoostingClassifier(
+                n_estimators=100, random_state=42, max_depth=6
+            ),
+            "requiere_escalado": False,
+        },
+    }
+
+    # Filtrar solo los modelos seleccionados
+    modelos_a_entrenar = {
+        nombre: config
+        for nombre, config in todos_los_modelos.items()
+        if nombre in modelos_seleccionados
     }
 
     resultados = {}
 
-    for nombre, modelo in modelos.items():
-        if nombre == "Regresión Logística":
+    for nombre, config in modelos_a_entrenar.items():
+        modelo = config["modelo"]
+        requiere_escalado = config["requiere_escalado"]
+
+        # Entrenar el modelo
+        if requiere_escalado:
             modelo.fit(X_train_scaled, y_train)
             y_pred = modelo.predict(X_test_scaled)
             y_proba = modelo.predict_proba(X_test_scaled)[:, 1]
@@ -151,9 +282,9 @@ def entrenar_modelos(data):
         # Calcular métricas
         metricas = {
             "accuracy": accuracy_score(y_test, y_pred),
-            "precision": precision_score(y_test, y_pred),
-            "recall": recall_score(y_test, y_pred),
-            "f1": f1_score(y_test, y_pred),
+            "precision": precision_score(y_test, y_pred, zero_division=0),
+            "recall": recall_score(y_test, y_pred, zero_division=0),
+            "f1": f1_score(y_test, y_pred, zero_division=0),
             "confusion_matrix": confusion_matrix(y_test, y_pred),
         }
 
@@ -163,7 +294,7 @@ def entrenar_modelos(data):
             "y_test": y_test,
             "y_pred": y_pred,
             "y_proba": y_proba,
-            "scaler": scaler if nombre == "Regresión Logística" else None,
+            "scaler": scaler if requiere_escalado else None,
         }
 
     return resultados, X_train, X_test
@@ -227,8 +358,35 @@ def mostrar_metricas_modelo(resultados):
     Args:
         resultados (dict): Resultados de los modelos entrenados
     """
+    # Crear comparación de métricas
+    if len(resultados) > 1:
+        st.subheader("📊 Comparación de Modelos")
+        
+        metricas_df = pd.DataFrame({
+            nombre: {
+                "Accuracy": resultado["metricas"]["accuracy"],
+                "Precision": resultado["metricas"]["precision"],
+                "Recall": resultado["metricas"]["recall"],
+                "F1-Score": resultado["metricas"]["f1"],
+            }
+            for nombre, resultado in resultados.items()
+        }).round(3)
+        
+        st.dataframe(metricas_df)
+        
+        # Gráfico de barras comparativo
+        fig_comp = px.bar(
+            metricas_df.T.reset_index(),
+            x="index",
+            y=["Accuracy", "Precision", "Recall", "F1-Score"],
+            title="Comparación de Métricas por Modelo",
+            barmode="group"
+        )
+        st.plotly_chart(fig_comp, use_container_width=True)
+
+    # Detalles individuales de cada modelo
     for nombre, resultado in resultados.items():
-        st.subheader(f"📊 Métricas - {nombre}")
+        st.subheader(f"📊 Métricas Detalladas - {nombre}")
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -381,16 +539,68 @@ def main():
     """
     )
 
-    # Sidebar con información
+    # Sidebar con configuraciones
     with st.sidebar:
+        st.header("⚙️ Configuración")
+        
+        # Seleccionar fuente de datos
+        st.subheader("📊 Fuente de Datos")
+        fuente_datos = st.radio(
+            "Elige la fuente de datos:",
+            ["Datos Simulados", "Cargar CSV"]
+        )
+        
+        data = None  # Inicializar data
+        
+        if fuente_datos == "Datos Simulados":
+            n_samples = st.slider("Número de muestras:", 300, 1000, 500)
+            data = generar_datos_simulados(n_samples)
+            st.success(f"✅ Usando datos simulados ({n_samples} muestras)")
+        else:
+            st.markdown("**Formato requerido del CSV:**")
+            st.code("edad,ingresos_anuales,tiempo_web_minutos,productos_vistos,historial_compras,puntuacion_credito,compra")
+            data_csv = cargar_datos_csv()
+            
+            if data_csv is not None:
+                data = data_csv
+                st.success("✅ Usando datos del CSV cargado")
+            else:
+                st.warning("⚠️ No se ha cargado ningún CSV. Usando datos simulados por defecto.")
+                n_samples = st.slider("Número de muestras:", 300, 1000, 500, key="fallback_samples")
+                data = generar_datos_simulados(n_samples)
+        
+        # Seleccionar modelos
+        st.subheader("🤖 Selección de Modelos")
+        modelos_disponibles = [
+            "Random Forest",
+            "Regresión Logística", 
+            "SVM",
+            "Gradient Boosting"
+        ]
+        
+        modelos_seleccionados = []
+        for modelo in modelos_disponibles:
+            if st.checkbox(modelo, value=(modelo in ["Random Forest", "Regresión Logística"])):
+                modelos_seleccionados.append(modelo)
+        
+        if not modelos_seleccionados:
+            st.warning("⚠️ Selecciona al menos un modelo")
+        
+        # Información del proyecto
+        st.markdown("---")
         st.header("ℹ️ Información del Proyecto")
+        
+        # Determinar el tipo de datos que se está usando
+        tipo_datos = "CSV cargado" if fuente_datos == "Cargar CSV" and data is not None and st.session_state.get('csv_cargado', False) else "Simulados"
+        
         st.markdown(
-            """
-        **Características del Dataset:**
-        - 🔢 Muestras: 500
+            f"""
+        **Dataset Actual:**
+        - 📊 Tipo: {tipo_datos}
+        - 🔢 Muestras: {len(data) if data is not None else 0}
         - 📊 Variables: 6 características + 1 target
         - 🎯 Tipo: Clasificación binaria
-        - 📈 Modelos: Random Forest y Regresión Logística
+        - 🤖 Modelos seleccionados: {len(modelos_seleccionados)}
         
         **Variables:**
         - Edad del cliente
@@ -402,12 +612,10 @@ def main():
         """
         )
 
-        # Control del tamaño del dataset
-        n_samples = st.slider("Número de muestras:", 300, 1000, 500)
-
-    # Generar datos
-    with st.spinner("🔄 Generando dataset simulado..."):
-        data = generar_datos_simulados(n_samples)
+    # Verificar que hay modelos seleccionados (data siempre existirá ahora)
+    if not modelos_seleccionados:
+        st.error("❌ Selecciona al menos un modelo en la barra lateral")
+        st.stop()
 
     # Tabs para organizar el contenido
     tab1, tab2, tab3, tab4 = st.tabs(
@@ -431,14 +639,16 @@ def main():
 
     with tab2:
         st.header("🤖 Entrenamiento de Modelos")
+        
+        st.info(f"🎯 Modelos seleccionados: {', '.join(modelos_seleccionados)}")
 
         with st.spinner("🔄 Entrenando modelos de ML..."):
-            resultados, X_train, X_test = entrenar_modelos(data)
+            resultados, X_train, X_test = entrenar_modelos(data, modelos_seleccionados)
 
         st.success("✅ Modelos entrenados exitosamente!")
 
         # Información del entrenamiento
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
         with col1:
             st.metric("Muestras de Entrenamiento", len(X_train))
@@ -448,17 +658,20 @@ def main():
 
         with col3:
             st.metric("Características", X_train.shape[1])
+            
+        with col4:
+            st.metric("Modelos Entrenados", len(resultados))
 
     with tab3:
         st.header("📈 Métricas de Rendimiento")
 
-        if "resultados" in locals():
+        if "resultados" in locals() and resultados:
             mostrar_metricas_modelo(resultados)
         else:
             st.warning("⚠️ Primero entrena los modelos en la pestaña 'Modelos ML'")
 
     with tab4:
-        if "resultados" in locals():
+        if "resultados" in locals() and resultados:
             seccion_prediccion(resultados, data)
         else:
             st.warning("⚠️ Primero entrena los modelos en la pestaña 'Modelos ML'")
